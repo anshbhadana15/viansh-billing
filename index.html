@@ -431,7 +431,7 @@ const DEFAULT_SETTINGS={firmName:"Viansh Infra Solutions",gstin:"06GQMPB4517F1ZZ
   terms:"1. Goods once sold will not be taken back.\n2. Interest @18% p.a. will be charged on overdue bills.\n3. Subject to local jurisdiction.",
   invFooter:"This is a computer-generated invoice.",roundoff:true,signatory:"Ansh Bhadana",
   sync:{provider:"github",token:"",gistId:"",auto:true},
-  ai:{anthropicKey:"",model:"claude-sonnet-4-6"}};
+  ai:{provider:"anthropic",anthropicKey:"",model:"claude-sonnet-4-6",openaiKey:"",openaiModel:"gpt-4o-mini"}};
 
 function mergeSettings(s){const d={...DEFAULT_SETTINGS,...(s||{})};d.sync={...DEFAULT_SETTINGS.sync,...(s&&s.sync||{})};d.ai={...DEFAULT_SETTINGS.ai,...(s&&s.ai||{})};return d}
 function vaultObject(){const o={};for(const k of KEYS)o[k]=db[k];o._v=1;o._savedAt=new Date().toISOString();return o}
@@ -493,10 +493,25 @@ async function testGithub(token){
 function gstinValid(g){return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[0-9A-Z]{1}Z[0-9A-Z]{1}$/.test((g||"").toUpperCase())}
 
 /* ---- AI: uses your Anthropic key when standalone; works key-less inside Claude ---- */
-function aiKeySet(){return !!(db.settings.ai&&(db.settings.ai.anthropicKey||"").trim())}
+function aiKeySet(){const ai=db.settings.ai||{};const p=ai.provider||"anthropic";return p==="openai"?!!(ai.openaiKey||"").trim():!!(ai.anthropicKey||"").trim()}
 async function aiCall(messages,system,maxTok){
-  const key=(db.settings.ai&&db.settings.ai.anthropicKey||"").trim();
-  const model=(db.settings.ai&&db.settings.ai.model)||"claude-sonnet-4-6";
+  const ai=db.settings.ai||{};const provider=ai.provider||"anthropic";
+  /* ---- OpenAI / ChatGPT ---- */
+  if(provider==="openai"){
+    const key=(ai.openaiKey||"").trim();
+    const model=(ai.openaiModel||"gpt-4o-mini").trim();
+    if(!key)throw new Error("Add your OpenAI API key in Settings → AI & Keys.");
+    const msgs=system?[{role:"system",content:system},...messages]:messages;
+    const res=await fetch("https://api.openai.com/v1/chat/completions",{method:"POST",
+      headers:{"content-type":"application/json","authorization":"Bearer "+key},
+      body:JSON.stringify({model,max_tokens:maxTok||1024,messages:msgs})});
+    if(!res.ok){const tx=await res.text();if(res.status===401||res.status===403)throw new Error("OpenAI key rejected. Check your key in Settings → AI & Keys.");throw new Error("AI error "+res.status+": "+tx.slice(0,160))}
+    const data=await res.json();
+    return ((data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||"").trim();
+  }
+  /* ---- Anthropic / Claude ---- */
+  const key=(ai.anthropicKey||"").trim();
+  const model=ai.model||"claude-sonnet-4-6";
   const body={model,max_tokens:maxTok||1024,messages};if(system)body.system=system;
   const headers={"content-type":"application/json"};
   if(key){headers["x-api-key"]=key;headers["anthropic-version"]="2023-06-01";headers["anthropic-dangerous-direct-browser-access"]="true"}
@@ -1188,15 +1203,26 @@ function renderSettings(el){
     <div class="field"><label>Invoice footer line</label><input class="inp" id="s_footer" value="${esc(s.invFooter)}"></div>
     <div class="field"><label style="display:flex;align-items:center;gap:9px;cursor:pointer"><input type="checkbox" id="s_round" ${s.roundoff?"checked":""} style="width:17px;height:17px">Round off invoice totals to nearest rupee</label></div>
     <button class="btn btn-pri" onclick="saveSettings('doc')">Save settings</button>`;
-  if(setTab==="keys"){const ai=s.ai||{};p.innerHTML=`
+  if(setTab==="keys"){const ai=s.ai||{};const prov=ai.provider||"anthropic";p.innerHTML=`
     <h2 class="sec">AI &amp; API Keys</h2>
-    <p class="hint" style="margin-bottom:18px">Your key is stored <b>encrypted</b> on your device and never shared. It powers the AI assistant and the HSN/SAC finder.</p>
-    <div class="card-pad" style="background:var(--mint);border:1px solid var(--mint-200);border-radius:11px;margin-bottom:20px">
-      <div style="font-weight:700;color:var(--pine);margin-bottom:4px;display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" width="16" height="16" fill="var(--pine)"><path d="M12 3l1.6 4L17.6 8.5l-4 1.5L12 14l-1.6-4L6.4 8.5l4-1.5L12 3z"/></svg>Anthropic AI key</div>
+    <p class="hint" style="margin-bottom:18px">Your keys are stored <b>encrypted</b> on your device and never shared. They power the AI assistant and the HSN/SAC finder.</p>
+    <div class="field" style="margin-bottom:18px"><label>AI provider <span class="hint">(which service the assistant uses)</span></label>
+      <select class="sel" id="k_provider" onchange="onProviderChange(this.value)">
+        <option value="anthropic" ${prov==="anthropic"?"selected":""}>Anthropic — Claude</option>
+        <option value="openai" ${prov==="openai"?"selected":""}>OpenAI — ChatGPT</option>
+      </select>
+    </div>
+    <div class="card-pad" id="prov_anthropic" style="background:var(--mint);border:1px solid var(--mint-200);border-radius:11px;margin-bottom:16px;display:${prov==="anthropic"?"block":"none"}">
+      <div style="font-weight:700;color:var(--pine);margin-bottom:4px;display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" width="16" height="16" fill="var(--pine)"><path d="M12 3l1.6 4L17.6 8.5l-4 1.5L12 14l-1.6-4L6.4 8.5l4-1.5L12 3z"/></svg>Anthropic (Claude) key</div>
       <div class="field" style="margin-bottom:10px"><label>API key <span class="hint">(from console.anthropic.com → API Keys)</span></label><input class="inp tnum" type="password" id="k_anthropic" value="${esc(ai.anthropicKey||"")}" placeholder="sk-ant-..."></div>
       <div class="field" style="margin-bottom:0"><label>Model</label><input class="inp tnum" id="k_model" value="${esc(ai.model||"claude-sonnet-4-6")}" placeholder="claude-sonnet-4-6"></div>
     </div>
-    <p class="hint" style="margin-bottom:20px;line-height:1.55"><b>Tip:</b> paste your key here once — it lives encrypted on this device only. Never put a key directly into the page source or share it in a chat/email.</p>
+    <div class="card-pad" id="prov_openai" style="background:#eaf3ee;border:1px solid #cfe3d8;border-radius:11px;margin-bottom:16px;display:${prov==="openai"?"block":"none"}">
+      <div style="font-weight:700;color:#0f7a52;margin-bottom:4px;display:flex;align-items:center;gap:7px"><svg viewBox="0 0 24 24" width="16" height="16" fill="#0f7a52"><circle cx="12" cy="12" r="9"/></svg>OpenAI (ChatGPT) key</div>
+      <div class="field" style="margin-bottom:10px"><label>API key <span class="hint">(from platform.openai.com → API keys)</span></label><input class="inp tnum" type="password" id="k_openai" value="${esc(ai.openaiKey||"")}" placeholder="sk-..."></div>
+      <div class="field" style="margin-bottom:0"><label>Model <span class="hint">(e.g. gpt-4o-mini · gpt-4.1-mini · gpt-4.1 · gpt-5.4)</span></label><input class="inp tnum" id="k_openaimodel" value="${esc(ai.openaiModel||"gpt-4o-mini")}" placeholder="gpt-4o-mini"></div>
+    </div>
+    <p class="hint" style="margin-bottom:20px;line-height:1.55"><b>Tip:</b> paste a key here once — it lives encrypted on this device only. Never put a key directly into the page source or share it in a chat/email. You only need a key for the provider you select above.</p>
     <button class="btn btn-pri" onclick="saveKeys()">Save keys</button>
     <button class="btn btn-ghost" onclick="testAI()" style="margin-left:8px">Test AI</button>`;
   }
@@ -1238,10 +1264,21 @@ function saveSettings(tab){
   if(tab==="doc")Object.assign(db.settings,{signatory:g("s_sign").value.trim(),terms:g("s_terms").value,invFooter:g("s_footer").value.trim(),roundoff:g("s_round").checked});
   save("settings");toast("Settings saved","ok");renderNav();render();
 }
+function onProviderChange(v){
+  const a=document.getElementById("prov_anthropic"),o=document.getElementById("prov_openai");
+  if(a)a.style.display=v==="anthropic"?"block":"none";
+  if(o)o.style.display=v==="openai"?"block":"none";
+}
 function saveKeys(){
   const g=id=>document.getElementById(id);
-  db.settings.ai={anthropicKey:g("k_anthropic").value.trim(),model:g("k_model").value.trim()||"claude-sonnet-4-6"};
-  save();toast("Key saved securely","ok");render();
+  db.settings.ai={
+    provider:g("k_provider").value,
+    anthropicKey:g("k_anthropic").value.trim(),
+    model:g("k_model").value.trim()||"claude-sonnet-4-6",
+    openaiKey:g("k_openai").value.trim(),
+    openaiModel:g("k_openaimodel").value.trim()||"gpt-4o-mini"
+  };
+  save();toast("Keys saved securely","ok");render();
 }
 async function testAI(){
   toast("Testing AI…");
